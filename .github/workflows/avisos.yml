@@ -1,0 +1,54 @@
+# MEDICATOR · temporizador gratuito de avisos (pastillas y citas). By Neogest Lab
+name: Avisos MEDICATOR
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # cada 5 minutos: revisa pastillas y citas y manda los avisos al móvil
+    - cron: '17 3 * * 1'    # cada lunes: mantiene vivo el temporizador (GitHub lo pausa tras 60 días sin cambios)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: avisos-medicator
+  cancel-in-progress: false
+
+jobs:
+  avisos:
+    if: github.event.schedule != '17 3 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Revisar y enviar avisos
+        env:
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+        run: |
+          if [ -z "$CRON_TOKEN" ]; then echo "Falta el secreto CRON_TOKEN"; exit 1; fi
+          for intento in 1 2 3; do
+            code=$(curl -sS -o resp.json -w '%{http_code}' --max-time 90 -X POST \
+              -H "Content-Type: application/json" -H "X-Cron-Token: $CRON_TOKEN" -d '{}' \
+              https://base44.app/api/apps/6ae67de2f75ccdad6e36ab92/functions/avisos-programados || echo 000)
+            echo "Intento $intento → HTTP $code"; head -c 400 resp.json 2>/dev/null; echo
+            [ "$code" = "200" ] && exit 0
+            sleep 10
+          done
+          exit 1
+
+  mantener-activo:
+    if: github.event.schedule == '17 3 * * 1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Commit de mantenimiento si hace más de 40 días del último
+        run: |
+          dias=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "Días desde el último cambio: $dias"
+          if [ "$dias" -ge 40 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+            date -u +%FT%TZ > .ultimo-mantenimiento
+            git add .ultimo-mantenimiento
+            git commit -m "Mantener activo el temporizador de avisos"
+            git push
+          fi
